@@ -49,7 +49,7 @@ stages:
         workingDirectory: '$(System.DefaultWorkingDirectory)'
         backendServiceArm: '$(serviceConnectionName)'
         backendAzureRmResourceGroupName: 'terraform-state-rg'
-        backendAzureRmStorageAccountName: 'tfstate'
+        backendAzureRmStorageAccountName: 'tfstatexpichi'
         backendAzureRmContainerName: 'tfstate'
         backendAzureRmKey: 'terraform.tfstate'
     
@@ -88,7 +88,7 @@ stages:
         workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/test'
         backendServiceArm: '$(serviceConnectionName)'
         backendAzureRmResourceGroupName: 'terraform-state-rg'
-        backendAzureRmStorageAccountName: 'tfstate'
+        backendAzureRmStorageAccountName: 'tfstatexpichi'
         backendAzureRmContainerName: 'tfstate'
         backendAzureRmKey: 'test.terraform.tfstate'
     
@@ -130,7 +130,7 @@ stages:
         workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/preprod'
         backendServiceArm: '$(serviceConnectionName)'
         backendAzureRmResourceGroupName: 'terraform-state-rg'
-        backendAzureRmStorageAccountName: 'tfstate'
+        backendAzureRmStorageAccountName: 'tfstatexpichi'
         backendAzureRmContainerName: 'tfstate'
         backendAzureRmKey: 'preprod.terraform.tfstate'
     
@@ -172,7 +172,7 @@ stages:
         workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/prod'
         backendServiceArm: '$(serviceConnectionName)'
         backendAzureRmResourceGroupName: 'terraform-state-rg'
-        backendAzureRmStorageAccountName: 'tfstate'
+        backendAzureRmStorageAccountName: 'tfstatexpichi'
         backendAzureRmContainerName: 'tfstate'
         backendAzureRmKey: 'prod.terraform.tfstate'
     
