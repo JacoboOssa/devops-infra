@@ -1,5 +1,14 @@
 # enviroments/test/main.tf
 
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "terraform-state-rg"
+    storage_account_name = "tfstate"
+    container_name       = "tfstate"
+    key                  = "preprod.terraform.tfstate"
+  }
+}
+
 module "app_preprod" {
   source              = "../../modules/container_app"
   name_prefix         = "preprod"
