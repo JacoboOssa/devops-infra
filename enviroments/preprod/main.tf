@@ -3,7 +3,7 @@
 terraform {
   backend "azurerm" {
     resource_group_name  = "terraform-state-rg"
-    storage_account_name = "tfstate"
+    storage_account_name = "tfstatexpichi"
     container_name       = "tfstate"
     key                  = "preprod.terraform.tfstate"
   }
