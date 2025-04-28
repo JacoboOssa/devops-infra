@@ -1,0 +1,392 @@
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - '**/*.tf'
+      - '**/*.tfvars'
+      - 'azure-pipelines.yml'
+
+# Add parameters to allow manual selection of environments to deploy
+parameters:
+  - name: deployTest
+    displayName: 'Deploy to Test'
+    type: boolean
+    default: false
+  - name: deployPreProd
+    displayName: 'Deploy to PreProd'
+    type: boolean
+    default: false
+  - name: deployProd
+    displayName: 'Deploy to Production'
+    type: boolean
+    default: false
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - name: serviceConnectionName
+    value: 'azure-service-connection' # Replace with your Azure service connection name
+  - name: terraformVersion
+    value: '1.7.0'
+  # Add path change detection variables
+  - name: testChanged
+    value: $[or(eq(variables['Build.SourceBranch'], 'refs/heads/main'), 
+                containsValue(variables['changed.files'], 'enviroments/test/'), 
+                containsValue(variables['changed.files'], 'modules/'),
+                eq('${{ parameters.deployTest }}', 'true'))]
+  - name: preprodChanged
+    value: $[or(containsValue(variables['changed.files'], 'enviroments/preprod/'), 
+                containsValue(variables['changed.files'], 'modules/'),
+                eq('${{ parameters.deployPreProd }}', 'true'))]
+  - name: prodChanged
+    value: $[or(containsValue(variables['changed.files'], 'enviroments/prod/'), 
+                containsValue(variables['changed.files'], 'modules/'),
+                eq('${{ parameters.deployProd }}', 'true'))]
+
+stages:
+# Add a new stage to detect changed files
+- stage: DetectChanges
+  displayName: 'Detect Changed Files'
+  jobs:
+  - job: DetectChanges
+    displayName: 'Detect Changed Files'
+    steps:
+    - checkout: self
+      fetchDepth: 2
+      
+    - script: |
+        # Get the files that changed in this commit
+        if [ -n "$(Build.SourceVersion)" ]; then
+          PREV_COMMIT=$(git rev-parse HEAD~1)
+          echo "Previous commit: $PREV_COMMIT"
+          echo "Current commit: $(Build.SourceVersion)"
+          CHANGED_FILES=$(git diff --name-only $PREV_COMMIT $(Build.SourceVersion) | tr '\n' ' ')
+          echo "Changed files: $CHANGED_FILES"
+          echo "##vso[task.setvariable variable=changed.files;isOutput=true]$CHANGED_FILES"
+        else
+          echo "No source version found, assuming first run or manual trigger"
+          echo "##vso[task.setvariable variable=changed.files;isOutput=true]all"
+        fi
+      displayName: 'Get Changed Files'
+      name: getChangedFiles
+
+- stage: Validate
+  displayName: 'Validate Infrastructure'
+  dependsOn: DetectChanges
+  jobs:
+  - job: Validate
+    displayName: 'Validate Terraform'
+    steps:
+    - task: TerraformInstaller@1
+      displayName: 'Install Terraform $(terraformVersion)'
+      inputs:
+        terraformVersion: '$(terraformVersion)'
+    
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform Init'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+        backendServiceArm: '$(serviceConnectionName)'
+        backendAzureRmResourceGroupName: 'terraform-state-rg'
+        backendAzureRmStorageAccountName: 'tfstate$(Build.Repository.Name)'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: 'terraform.tfstate'
+    
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform Validate'
+      inputs:
+        provider: 'azurerm'
+        command: 'validate'
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform Format Check'
+      inputs:
+        provider: 'azurerm'
+        command: 'custom'
+        customCommand: 'fmt -check -recursive'
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+        
+- stage: Test
+  displayName: 'Deploy to Test'
+  dependsOn: 
+  - DetectChanges
+  - Validate
+  variables:
+    changed.files: $[ dependencies.DetectChanges.outputs['getChangedFiles.changed.files'] ]
+  condition: >
+    and(
+      succeeded('Validate'),
+      or(
+        eq(variables.testChanged, 'true'), 
+        eq('${{ parameters.deployTest }}', 'true')
+      )
+    )
+  jobs:
+  - job: Plan
+    displayName: 'Terraform Plan'
+    steps:
+    - task: TerraformInstaller@1
+      displayName: 'Install Terraform $(terraformVersion)'
+      inputs:
+        terraformVersion: '$(terraformVersion)'
+    
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform Init'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/test'
+        backendServiceArm: '$(serviceConnectionName)'
+        backendAzureRmResourceGroupName: 'terraform-state-rg'
+        backendAzureRmStorageAccountName: 'tfstate$(Build.Repository.Name)'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: 'test.terraform.tfstate'
+    
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform Plan'
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/test'
+        environmentServiceNameAzureRM: '$(serviceConnectionName)'
+        publishPlanResults: 'test-plan'
+        commandOptions: '-out=$(System.DefaultWorkingDirectory)/test.tfplan'
+    
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Terraform Plan'
+      inputs:
+        targetPath: '$(System.DefaultWorkingDirectory)/test.tfplan'
+        artifact: 'test-plan'
+        
+  - deployment: Deploy
+    displayName: 'Deploy Test Environment'
+    dependsOn: Plan
+    environment: 'test'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform $(terraformVersion)'
+            inputs:
+              terraformVersion: '$(terraformVersion)'
+          
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Terraform Plan'
+            inputs:
+              artifactName: 'test-plan'
+              targetPath: '$(System.DefaultWorkingDirectory)'
+          
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Init'
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/test'
+              backendServiceArm: '$(serviceConnectionName)'
+              backendAzureRmResourceGroupName: 'terraform-state-rg'
+              backendAzureRmStorageAccountName: 'tfstate$(Build.Repository.Name)'
+              backendAzureRmContainerName: 'tfstate'
+              backendAzureRmKey: 'test.terraform.tfstate'
+          
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Apply'
+            inputs:
+              provider: 'azurerm'
+              command: 'apply'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/test'
+              environmentServiceNameAzureRM: '$(serviceConnectionName)'
+              commandOptions: '$(System.DefaultWorkingDirectory)/test.tfplan'
+
+- stage: PreProd
+  displayName: 'Deploy to PreProd'
+  dependsOn: 
+  - DetectChanges
+  - Validate
+  - Test
+  variables:
+    changed.files: $[ dependencies.DetectChanges.outputs['getChangedFiles.changed.files'] ]
+  condition: >
+    and(
+      in(dependencies.Test.result, 'Succeeded', 'Skipped'),
+      or(
+        eq(variables.preprodChanged, 'true'),
+        eq('${{ parameters.deployPreProd }}', 'true')
+      )
+    )
+  jobs:
+  - job: Plan
+    displayName: 'Terraform Plan'
+    steps:
+    - task: TerraformInstaller@1
+      displayName: 'Install Terraform $(terraformVersion)'
+      inputs:
+        terraformVersion: '$(terraformVersion)'
+    
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform Init'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/preprod'
+        backendServiceArm: '$(serviceConnectionName)'
+        backendAzureRmResourceGroupName: 'terraform-state-rg'
+        backendAzureRmStorageAccountName: 'tfstate$(Build.Repository.Name)'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: 'preprod.terraform.tfstate'
+    
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform Plan'
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/preprod'
+        environmentServiceNameAzureRM: '$(serviceConnectionName)'
+        publishPlanResults: 'preprod-plan'
+        commandOptions: '-out=$(System.DefaultWorkingDirectory)/preprod.tfplan'
+    
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Terraform Plan'
+      inputs:
+        targetPath: '$(System.DefaultWorkingDirectory)/preprod.tfplan'
+        artifact: 'preprod-plan'
+        
+  - deployment: Deploy
+    displayName: 'Deploy PreProd Environment'
+    dependsOn: Plan
+    environment: 'preprod'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform $(terraformVersion)'
+            inputs:
+              terraformVersion: '$(terraformVersion)'
+          
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Terraform Plan'
+            inputs:
+              artifactName: 'preprod-plan'
+              targetPath: '$(System.DefaultWorkingDirectory)'
+          
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Init'
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/preprod'
+              backendServiceArm: '$(serviceConnectionName)'
+              backendAzureRmResourceGroupName: 'terraform-state-rg'
+              backendAzureRmStorageAccountName: 'tfstate$(Build.Repository.Name)'
+              backendAzureRmContainerName: 'tfstate'
+              backendAzureRmKey: 'preprod.terraform.tfstate'
+          
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Apply'
+            inputs:
+              provider: 'azurerm'
+              command: 'apply'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/preprod'
+              environmentServiceNameAzureRM: '$(serviceConnectionName)'
+              commandOptions: '$(System.DefaultWorkingDirectory)/preprod.tfplan'
+
+- stage: Prod
+  displayName: 'Deploy to Production'
+  dependsOn: 
+  - DetectChanges
+  - Validate
+  - PreProd
+  variables:
+    changed.files: $[ dependencies.DetectChanges.outputs['getChangedFiles.changed.files'] ]
+  condition: >
+    and(
+      in(dependencies.PreProd.result, 'Succeeded', 'Skipped'),
+      or(
+        eq(variables.prodChanged, 'true'),
+        eq('${{ parameters.deployProd }}', 'true')
+      )
+    )
+  jobs:
+  - job: Plan
+    displayName: 'Terraform Plan'
+    steps:
+    - task: TerraformInstaller@1
+      displayName: 'Install Terraform $(terraformVersion)'
+      inputs:
+        terraformVersion: '$(terraformVersion)'
+    
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform Init'
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/prod'
+        backendServiceArm: '$(serviceConnectionName)'
+        backendAzureRmResourceGroupName: 'terraform-state-rg'
+        backendAzureRmStorageAccountName: 'tfstate$(Build.Repository.Name)'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: 'prod.terraform.tfstate'
+    
+    - task: TerraformTaskV4@4
+      displayName: 'Terraform Plan'
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/prod'
+        environmentServiceNameAzureRM: '$(serviceConnectionName)'
+        publishPlanResults: 'prod-plan'
+        commandOptions: '-out=$(System.DefaultWorkingDirectory)/prod.tfplan'
+    
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish Terraform Plan'
+      inputs:
+        targetPath: '$(System.DefaultWorkingDirectory)/prod.tfplan'
+        artifact: 'prod-plan'
+        
+  - deployment: Deploy
+    displayName: 'Deploy Production Environment'
+    dependsOn: Plan
+    environment: 'prod'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform $(terraformVersion)'
+            inputs:
+              terraformVersion: '$(terraformVersion)'
+          
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Terraform Plan'
+            inputs:
+              artifactName: 'prod-plan'
+              targetPath: '$(System.DefaultWorkingDirectory)'
+          
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Init'
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/prod'
+              backendServiceArm: '$(serviceConnectionName)'
+              backendAzureRmResourceGroupName: 'terraform-state-rg'
+              backendAzureRmStorageAccountName: 'tfstate$(Build.Repository.Name)'
+              backendAzureRmContainerName: 'tfstate'
+              backendAzureRmKey: 'prod.terraform.tfstate'
+          
+          - task: TerraformTaskV4@4
+            displayName: 'Terraform Apply'
+            inputs:
+              provider: 'azurerm'
+              command: 'apply'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/enviroments/prod'
+              environmentServiceNameAzureRM: '$(serviceConnectionName)'
+              commandOptions: '$(System.DefaultWorkingDirectory)/prod.tfplan'
