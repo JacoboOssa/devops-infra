@@ -25,7 +25,7 @@ pool:
 
 variables:
   - name: serviceConnectionName
-    value: 'azure-service-connection' # Replace with your Azure service connection name
+    value: 'azureRM-preprod' # Replace with your Azure service connection name
   - name: terraformVersion
     value: '1.7.0'
 
