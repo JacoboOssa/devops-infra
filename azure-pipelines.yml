@@ -25,7 +25,7 @@ pool:
 
 variables:
   - name: serviceConnectionName
-    value: 'azureRM-preprod' # Replace with your Azure service connection name
+    value: 'azureRM-preprod' # Updated to match the existing service connection name
   - name: terraformVersion
     value: '1.7.0'
 
@@ -52,6 +52,7 @@ stages:
         backendAzureRmStorageAccountName: 'tfstatexpichi'
         backendAzureRmContainerName: 'tfstate'
         backendAzureRmKey: 'terraform.tfstate'
+        backendAzureRmAccessKey: '$(STORAGE_KEY)'
     
     - task: TerraformTaskV4@4
       displayName: 'Terraform Validate'
@@ -91,6 +92,7 @@ stages:
         backendAzureRmStorageAccountName: 'tfstatexpichi'
         backendAzureRmContainerName: 'tfstate'
         backendAzureRmKey: 'test.terraform.tfstate'
+        backendAzureRmAccessKey: '$(STORAGE_KEY)'
     
     - task: TerraformTaskV4@4
       displayName: 'Terraform Plan'
@@ -133,6 +135,7 @@ stages:
         backendAzureRmStorageAccountName: 'tfstatexpichi'
         backendAzureRmContainerName: 'tfstate'
         backendAzureRmKey: 'preprod.terraform.tfstate'
+        backendAzureRmAccessKey: '$(STORAGE_KEY)'
     
     - task: TerraformTaskV4@4
       displayName: 'Terraform Plan'
@@ -175,6 +178,7 @@ stages:
         backendAzureRmStorageAccountName: 'tfstatexpichi'
         backendAzureRmContainerName: 'tfstate'
         backendAzureRmKey: 'prod.terraform.tfstate'
+        backendAzureRmAccessKey: '$(STORAGE_KEY)'
     
     - task: TerraformTaskV4@4
       displayName: 'Terraform Plan'
